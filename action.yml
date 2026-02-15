@@ -1,0 +1,69 @@
+name: 'Begin Testbox'
+description: 'First half of the Blacksmith Testbox action pair. Installs SSH key, rsync, and phones home with hydrating status.'
+
+inputs:
+  testbox_id:
+    description: 'Testbox session ID'
+    required: true
+  testbox_token:
+    description: 'Bearer token for phone-home authentication'
+    required: true
+  idle_timeout:
+    description: 'Idle timeout in minutes'
+    required: false
+    default: '10'
+  api_url:
+    description: 'Backend API URL for phone-home callbacks'
+    required: true
+  ssh_public_key:
+    description: 'SSH public key to install for access'
+    required: false
+    default: ''
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install SSH public key
+      if: ${{ inputs.ssh_public_key != '' }}
+      shell: bash
+      run: |
+        mkdir -p ~/.ssh
+        echo "$SSH_PUBLIC_KEY" >> ~/.ssh/authorized_keys
+        chmod 700 ~/.ssh
+        chmod 600 ~/.ssh/authorized_keys
+        echo "SSH public key installed"
+      env:
+        SSH_PUBLIC_KEY: ${{ inputs.ssh_public_key }}
+
+    - name: Install rsync
+      shell: bash
+      run: |
+        which rsync || sudo apt-get install -y rsync
+
+    - name: Phone home (hydrating)
+      shell: bash
+      run: |
+        if [ -n "$BLACKSMITH_HOSTNAME" ]; then
+          RUNNER_HOST="$BLACKSMITH_HOSTNAME"
+        else
+          RUNNER_HOST="$BLACKSMITH_HOST_PUBLIC_IP"
+        fi
+        RUNNER_SSH_PORT="${BLACKSMITH_SSH_PORT:-22}"
+
+        curl -s -f -X POST "${API_URL}/api/testbox/phone-home" \
+          -H "Content-Type: application/json" \
+          -H "Authorization: Bearer ${TESTBOX_TOKEN}" \
+          -d "{
+            \"testbox_id\": \"${TESTBOX_ID}\",
+            \"status\": \"hydrating\",
+            \"ip_address\": \"${RUNNER_HOST}\",
+            \"ssh_port\": \"${RUNNER_SSH_PORT}\",
+            \"working_directory\": \"${GITHUB_WORKSPACE}\",
+            \"adopted_run_id\": \"${GITHUB_RUN_ID}\",
+            \"metadata\": {}
+          }" || echo "Warning: phone-home (hydrating) failed, continuing in degraded mode"
+        echo "Phone-home (hydrating) complete."
+      env:
+        API_URL: ${{ inputs.api_url }}
+        TESTBOX_ID: ${{ inputs.testbox_id }}
+        TESTBOX_TOKEN: ${{ inputs.testbox_token }}
