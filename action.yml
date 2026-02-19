@@ -35,41 +35,38 @@ runs:
       shell: bash
       run: |
         METADATA_ADDR="${{ steps.metadata.outputs.metadata_addr }}"
+        STATE=/tmp/.testbox
+        mkdir -p "$STATE"
+        chmod 700 "$STATE"
 
-        TESTBOX_ID=$(curl -s "http://${METADATA_ADDR}/testboxId")
-        IDLE_TIMEOUT=$(curl -s "http://${METADATA_ADDR}/testboxIdleTimeout")
-        SSH_PUBLIC_KEY=$(curl -s "http://${METADATA_ADDR}/testboxSshPublicKey")
-        API_URL=$(curl -s "http://${METADATA_ADDR}/backendURL")
-        VM_ID=$(curl -s "http://${METADATA_ADDR}/vmID")
+        curl -s --connect-timeout 2 --max-time 5 "http://${METADATA_ADDR}/testboxId" > "$STATE/testbox_id"
+        curl -s --connect-timeout 2 --max-time 5 "http://${METADATA_ADDR}/testboxIdleTimeout" > "$STATE/idle_timeout"
+        curl -s --connect-timeout 2 --max-time 5 "http://${METADATA_ADDR}/testboxSshPublicKey" > "$STATE/ssh_public_key"
+        curl -s --connect-timeout 2 --max-time 5 "http://${METADATA_ADDR}/backendURL" > "$STATE/api_url"
+        curl -s --connect-timeout 2 --max-time 5 "http://${METADATA_ADDR}/vmID" > "$STATE/vm_id"
 
         if [ -n "$BLACKSMITH_HOSTNAME" ]; then
-          RUNNER_HOST="$BLACKSMITH_HOSTNAME"
+          echo "$BLACKSMITH_HOSTNAME" > "$STATE/runner_host"
         else
-          RUNNER_HOST="$BLACKSMITH_HOST_PUBLIC_IP"
+          echo "$BLACKSMITH_HOST_PUBLIC_IP" > "$STATE/runner_host"
         fi
-        RUNNER_SSH_PORT="${BLACKSMITH_SSH_PORT:-22}"
+        echo "${BLACKSMITH_SSH_PORT:-22}" > "$STATE/runner_ssh_port"
+        echo "$GITHUB_WORKSPACE" > "$STATE/working_directory"
+        echo "$GITHUB_RUN_ID" > "$STATE/adopted_run_id"
 
-        mkdir -p /tmp/.testbox
-        {
-          printf 'TESTBOX_ID=%q\n' "$TESTBOX_ID"
-          printf 'IDLE_TIMEOUT=%q\n' "${IDLE_TIMEOUT:-10}"
-          printf 'SSH_PUBLIC_KEY=%q\n' "$SSH_PUBLIC_KEY"
-          printf 'API_URL=%q\n' "$API_URL"
-          printf 'VM_ID=%q\n' "$VM_ID"
-          printf 'RUNNER_HOST=%q\n' "$RUNNER_HOST"
-          printf 'RUNNER_SSH_PORT=%q\n' "$RUNNER_SSH_PORT"
-          printf 'WORKING_DIRECTORY=%q\n' "$GITHUB_WORKSPACE"
-          printf 'ADOPTED_RUN_ID=%q\n' "$GITHUB_RUN_ID"
-        } > /tmp/.testbox/state.env
-        chmod 600 /tmp/.testbox/state.env
+        # Default idle_timeout if empty
+        if [ ! -s "$STATE/idle_timeout" ]; then
+          echo "10" > "$STATE/idle_timeout"
+        fi
 
-        echo "Testbox config loaded from metadata service: testbox_id=${TESTBOX_ID}"
+        echo "Testbox config loaded from metadata service: testbox_id=$(cat "$STATE/testbox_id")"
 
     - name: Install SSH public key
       if: steps.metadata.outputs.available == 'true'
       shell: bash
       run: |
-        source /tmp/.testbox/state.env
+        STATE=/tmp/.testbox
+        SSH_PUBLIC_KEY=$(cat "$STATE/ssh_public_key")
         if [ -n "$SSH_PUBLIC_KEY" ]; then
           mkdir -p ~/.ssh
           echo "$SSH_PUBLIC_KEY" >> ~/.ssh/authorized_keys
@@ -88,7 +85,14 @@ runs:
       if: steps.metadata.outputs.available == 'true'
       shell: bash
       run: |
-        source /tmp/.testbox/state.env
+        STATE=/tmp/.testbox
+        TESTBOX_ID=$(cat "$STATE/testbox_id")
+        VM_ID=$(cat "$STATE/vm_id")
+        API_URL=$(cat "$STATE/api_url")
+        RUNNER_HOST=$(cat "$STATE/runner_host")
+        RUNNER_SSH_PORT=$(cat "$STATE/runner_ssh_port")
+        WORKING_DIRECTORY=$(cat "$STATE/working_directory")
+        ADOPTED_RUN_ID=$(cat "$STATE/adopted_run_id")
 
         curl -s -f -X POST "${API_URL}/api/testbox/phone-home" \
           -H "Content-Type: application/json" \
