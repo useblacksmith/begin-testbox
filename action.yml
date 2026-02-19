@@ -3,8 +3,9 @@ description: 'Initialize a Blacksmith Testbox session. Phones home to receive co
 
 inputs:
   testbox_id:
-    description: 'Testbox session ID (from workflow_dispatch input)'
-    required: true
+    description: 'Testbox session ID (from workflow_dispatch input). Leave empty for validation mode.'
+    required: false
+    default: ''
   api_url:
     description: 'Override the backend API URL (default: discovered from VM metadata)'
     required: false
@@ -12,6 +13,13 @@ inputs:
 runs:
   using: 'composite'
   steps:
+    - name: Check mode
+      shell: bash
+      run: |
+        if [ -z "${{ inputs.testbox_id }}" ]; then
+          echo "::notice::Running in validation mode — setup steps will be validated without starting a testbox session."
+        fi
+
     - name: Discover metadata service
       id: metadata
       shell: bash
@@ -30,7 +38,7 @@ runs:
         echo "metadata_addr=192.168.127.1:${METADATA_PORT}" >> "$GITHUB_OUTPUT"
 
     - name: Phone home and configure testbox
-      if: steps.metadata.outputs.available == 'true'
+      if: steps.metadata.outputs.available == 'true' && inputs.testbox_id != ''
       shell: bash
       env:
         TESTBOX_ID: ${{ inputs.testbox_id }}
@@ -104,7 +112,7 @@ runs:
         echo "Testbox initialized: testbox_id=${TESTBOX_ID}"
 
     - name: Install SSH public key
-      if: steps.metadata.outputs.available == 'true'
+      if: steps.metadata.outputs.available == 'true' && inputs.testbox_id != ''
       shell: bash
       run: |
         STATE=/tmp/.testbox
@@ -118,7 +126,7 @@ runs:
         fi
 
     - name: Install rsync
-      if: steps.metadata.outputs.available == 'true'
+      if: steps.metadata.outputs.available == 'true' && inputs.testbox_id != ''
       shell: bash
       run: |
         which rsync || sudo apt-get install -y rsync
