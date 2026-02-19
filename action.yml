@@ -1,5 +1,10 @@
 name: 'Begin Testbox'
-description: 'Initialize a Blacksmith Testbox session. Reads config from the VM metadata service, installs SSH key, rsync, and phones home with hydrating status.'
+description: 'Initialize a Blacksmith Testbox session. Phones home to receive config, installs SSH key and rsync.'
+
+inputs:
+  testbox_id:
+    description: 'Testbox session ID (from workflow_dispatch input)'
+    required: true
 
 runs:
   using: 'composite'
@@ -12,61 +17,81 @@ runs:
         if [ -z "$METADATA_PORT" ]; then
           METADATA_PORT=$(cat /proc/cmdline | tr ' ' '\n' | grep '^metadata_port=' | cut -d'=' -f2)
           if [ -z "$METADATA_PORT" ]; then
-            echo "metadata_port not found in kernel cmdline, testbox metadata not available"
+            echo "metadata_port not found in kernel cmdline"
             echo "available=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           export METADATA_PORT
         fi
-        METADATA_ADDR="192.168.127.1:${METADATA_PORT}"
-
-        TESTBOX_ID=$(curl -s --connect-timeout 2 --max-time 3 "http://${METADATA_ADDR}/testboxId" 2>/dev/null || true)
-        if [ -z "$TESTBOX_ID" ] || [ "$TESTBOX_ID" = "unset" ]; then
-          echo "No testbox metadata found on this VM"
-          echo "available=false" >> "$GITHUB_OUTPUT"
-          exit 0
-        fi
-
         echo "available=true" >> "$GITHUB_OUTPUT"
-        echo "metadata_addr=${METADATA_ADDR}" >> "$GITHUB_OUTPUT"
+        echo "metadata_addr=192.168.127.1:${METADATA_PORT}" >> "$GITHUB_OUTPUT"
 
-    - name: Read testbox config from metadata
+    - name: Phone home and configure testbox
       if: steps.metadata.outputs.available == 'true'
       shell: bash
       run: |
         METADATA_ADDR="${{ steps.metadata.outputs.metadata_addr }}"
+        TESTBOX_ID="${{ inputs.testbox_id }}"
         STATE=/tmp/.testbox
         mkdir -p "$STATE"
         chmod 700 "$STATE"
 
-        curl -s --connect-timeout 2 --max-time 5 "http://${METADATA_ADDR}/testboxId" > "$STATE/testbox_id"
-        curl -s --connect-timeout 2 --max-time 5 "http://${METADATA_ADDR}/testboxIdleTimeout" > "$STATE/idle_timeout"
-        curl -s --connect-timeout 2 --max-time 5 "http://${METADATA_ADDR}/testboxSshPublicKey" > "$STATE/ssh_public_key"
-        curl -s --connect-timeout 2 --max-time 5 "http://${METADATA_ADDR}/backendURL" > "$STATE/api_url"
-        curl -s --connect-timeout 2 --max-time 5 "http://${METADATA_ADDR}/vmID" > "$STATE/vm_id"
+        INSTALLATION_MODEL_ID=$(curl -s --connect-timeout 2 --max-time 5 "http://${METADATA_ADDR}/installationModelID")
+        API_URL=$(curl -s --connect-timeout 2 --max-time 5 "http://${METADATA_ADDR}/backendURL")
+
+        if [ -z "$API_URL" ] || [ -z "$INSTALLATION_MODEL_ID" ]; then
+          echo "Warning: could not read backendURL or installationModelID from metadata"
+          exit 0
+        fi
 
         if [ -n "$BLACKSMITH_HOSTNAME" ]; then
-          echo "$BLACKSMITH_HOSTNAME" > "$STATE/runner_host"
+          RUNNER_HOST="$BLACKSMITH_HOSTNAME"
         else
-          echo "$BLACKSMITH_HOST_PUBLIC_IP" > "$STATE/runner_host"
+          RUNNER_HOST="$BLACKSMITH_HOST_PUBLIC_IP"
         fi
-        echo "${BLACKSMITH_SSH_PORT:-22}" > "$STATE/runner_ssh_port"
+        RUNNER_SSH_PORT="${BLACKSMITH_SSH_PORT:-22}"
+
+        RESPONSE=$(curl -s -f -X POST "${API_URL}/api/testbox/phone-home" \
+          -H "Content-Type: application/json" \
+          -d "{
+            \"testbox_id\": \"${TESTBOX_ID}\",
+            \"installation_model_id\": ${INSTALLATION_MODEL_ID},
+            \"status\": \"hydrating\",
+            \"ip_address\": \"${RUNNER_HOST}\",
+            \"ssh_port\": \"${RUNNER_SSH_PORT}\",
+            \"working_directory\": \"${GITHUB_WORKSPACE}\",
+            \"adopted_run_id\": \"${GITHUB_RUN_ID}\",
+            \"metadata\": {}
+          }" 2>/dev/null) || {
+          echo "Warning: phone-home (hydrating) failed, continuing in degraded mode"
+          RESPONSE=""
+        }
+
+        echo "$TESTBOX_ID" > "$STATE/testbox_id"
+        echo "$INSTALLATION_MODEL_ID" > "$STATE/installation_model_id"
+        echo "$API_URL" > "$STATE/api_url"
+        echo "$RUNNER_HOST" > "$STATE/runner_host"
+        echo "$RUNNER_SSH_PORT" > "$STATE/runner_ssh_port"
         echo "$GITHUB_WORKSPACE" > "$STATE/working_directory"
         echo "$GITHUB_RUN_ID" > "$STATE/adopted_run_id"
 
-        # Default idle_timeout if empty
-        if [ ! -s "$STATE/idle_timeout" ]; then
+        if [ -n "$RESPONSE" ]; then
+          echo "$RESPONSE" | jq -r '.ssh_public_key // empty' > "$STATE/ssh_public_key"
+          IDLE_TIMEOUT=$(echo "$RESPONSE" | jq -r '.idle_timeout // empty')
+          echo "${IDLE_TIMEOUT:-10}" > "$STATE/idle_timeout"
+        else
+          echo "" > "$STATE/ssh_public_key"
           echo "10" > "$STATE/idle_timeout"
         fi
 
-        echo "Testbox config loaded from metadata service: testbox_id=$(cat "$STATE/testbox_id")"
+        echo "Testbox initialized: testbox_id=${TESTBOX_ID}"
 
     - name: Install SSH public key
       if: steps.metadata.outputs.available == 'true'
       shell: bash
       run: |
         STATE=/tmp/.testbox
-        SSH_PUBLIC_KEY=$(cat "$STATE/ssh_public_key")
+        SSH_PUBLIC_KEY=$(cat "$STATE/ssh_public_key" 2>/dev/null)
         if [ -n "$SSH_PUBLIC_KEY" ]; then
           mkdir -p ~/.ssh
           echo "$SSH_PUBLIC_KEY" >> ~/.ssh/authorized_keys
@@ -80,30 +105,3 @@ runs:
       shell: bash
       run: |
         which rsync || sudo apt-get install -y rsync
-
-    - name: Phone home (hydrating)
-      if: steps.metadata.outputs.available == 'true'
-      shell: bash
-      run: |
-        STATE=/tmp/.testbox
-        TESTBOX_ID=$(cat "$STATE/testbox_id")
-        VM_ID=$(cat "$STATE/vm_id")
-        API_URL=$(cat "$STATE/api_url")
-        RUNNER_HOST=$(cat "$STATE/runner_host")
-        RUNNER_SSH_PORT=$(cat "$STATE/runner_ssh_port")
-        WORKING_DIRECTORY=$(cat "$STATE/working_directory")
-        ADOPTED_RUN_ID=$(cat "$STATE/adopted_run_id")
-
-        curl -s -f -X POST "${API_URL}/api/testbox/phone-home" \
-          -H "Content-Type: application/json" \
-          -d "{
-            \"testbox_id\": \"${TESTBOX_ID}\",
-            \"status\": \"hydrating\",
-            \"vm_id\": \"${VM_ID}\",
-            \"ip_address\": \"${RUNNER_HOST}\",
-            \"ssh_port\": \"${RUNNER_SSH_PORT}\",
-            \"working_directory\": \"${WORKING_DIRECTORY}\",
-            \"adopted_run_id\": \"${ADOPTED_RUN_ID}\",
-            \"metadata\": {}
-          }" || echo "Warning: phone-home (hydrating) failed, continuing in degraded mode"
-        echo "Phone-home (hydrating) complete."
