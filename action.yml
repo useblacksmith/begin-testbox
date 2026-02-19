@@ -51,15 +51,15 @@ runs:
 
         mkdir -p /tmp/.testbox
         {
-          echo "TESTBOX_ID='${TESTBOX_ID}'"
-          echo "IDLE_TIMEOUT='${IDLE_TIMEOUT}'"
-          echo "SSH_PUBLIC_KEY='${SSH_PUBLIC_KEY}'"
-          echo "API_URL='${API_URL}'"
-          echo "VM_ID='${VM_ID}'"
-          echo "RUNNER_HOST='${RUNNER_HOST}'"
-          echo "RUNNER_SSH_PORT='${RUNNER_SSH_PORT}'"
-          echo "WORKING_DIRECTORY='${GITHUB_WORKSPACE}'"
-          echo "ADOPTED_RUN_ID='${GITHUB_RUN_ID}'"
+          printf 'TESTBOX_ID=%q\n' "$TESTBOX_ID"
+          printf 'IDLE_TIMEOUT=%q\n' "${IDLE_TIMEOUT:-10}"
+          printf 'SSH_PUBLIC_KEY=%q\n' "$SSH_PUBLIC_KEY"
+          printf 'API_URL=%q\n' "$API_URL"
+          printf 'VM_ID=%q\n' "$VM_ID"
+          printf 'RUNNER_HOST=%q\n' "$RUNNER_HOST"
+          printf 'RUNNER_SSH_PORT=%q\n' "$RUNNER_SSH_PORT"
+          printf 'WORKING_DIRECTORY=%q\n' "$GITHUB_WORKSPACE"
+          printf 'ADOPTED_RUN_ID=%q\n' "$GITHUB_RUN_ID"
         } > /tmp/.testbox/state.env
         chmod 600 /tmp/.testbox/state.env
 
