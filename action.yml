@@ -29,9 +29,10 @@ runs:
     - name: Phone home and configure testbox
       if: steps.metadata.outputs.available == 'true'
       shell: bash
+      env:
+        TESTBOX_ID: ${{ inputs.testbox_id }}
       run: |
         METADATA_ADDR="${{ steps.metadata.outputs.metadata_addr }}"
-        TESTBOX_ID="${{ inputs.testbox_id }}"
         STATE=/tmp/.testbox
         mkdir -p "$STATE"
         chmod 700 "$STATE"
@@ -55,7 +56,7 @@ runs:
           -H "Content-Type: application/json" \
           -d "{
             \"testbox_id\": \"${TESTBOX_ID}\",
-            \"installation_model_id\": ${INSTALLATION_MODEL_ID},
+            \"installation_model_id\": \"${INSTALLATION_MODEL_ID}\",
             \"status\": \"hydrating\",
             \"ip_address\": \"${RUNNER_HOST}\",
             \"ssh_port\": \"${RUNNER_SSH_PORT}\",
