@@ -1,48 +1,47 @@
 name: 'Begin Testbox'
-description: 'First half of the Blacksmith Testbox action pair. Installs SSH key, rsync, and phones home with hydrating status.'
-
-inputs:
-  testbox_id:
-    description: 'Testbox session ID'
-    required: true
-  testbox_token:
-    description: 'Bearer token for phone-home authentication'
-    required: true
-  idle_timeout:
-    description: 'Idle timeout in minutes'
-    required: false
-    default: '10'
-  api_url:
-    description: 'Backend API URL for phone-home callbacks'
-    required: true
-  ssh_public_key:
-    description: 'SSH public key to install for access'
-    required: false
-    default: ''
+description: 'Initialize a Blacksmith Testbox session. Reads config from the VM metadata service, installs SSH key, rsync, and phones home with hydrating status.'
 
 runs:
   using: 'composite'
   steps:
-    - name: Install SSH public key
-      if: ${{ inputs.ssh_public_key != '' }}
+    - name: Discover metadata service
+      id: metadata
       shell: bash
       run: |
-        mkdir -p ~/.ssh
-        echo "$SSH_PUBLIC_KEY" >> ~/.ssh/authorized_keys
-        chmod 700 ~/.ssh
-        chmod 600 ~/.ssh/authorized_keys
-        echo "SSH public key installed"
-      env:
-        SSH_PUBLIC_KEY: ${{ inputs.ssh_public_key }}
+        METADATA_PORT="${METADATA_PORT:-}"
+        if [ -z "$METADATA_PORT" ]; then
+          METADATA_PORT=$(cat /proc/cmdline | tr ' ' '\n' | grep '^metadata_port=' | cut -d'=' -f2)
+          if [ -z "$METADATA_PORT" ]; then
+            echo "metadata_port not found in kernel cmdline, testbox metadata not available"
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          export METADATA_PORT
+        fi
+        METADATA_ADDR="192.168.127.1:${METADATA_PORT}"
 
-    - name: Install rsync
-      shell: bash
-      run: |
-        which rsync || sudo apt-get install -y rsync
+        TESTBOX_ID=$(curl -s --connect-timeout 2 --max-time 3 "http://${METADATA_ADDR}/testboxId" 2>/dev/null || true)
+        if [ -z "$TESTBOX_ID" ] || [ "$TESTBOX_ID" = "unset" ]; then
+          echo "No testbox metadata found on this VM"
+          echo "available=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
 
-    - name: Phone home (hydrating)
+        echo "available=true" >> "$GITHUB_OUTPUT"
+        echo "metadata_addr=${METADATA_ADDR}" >> "$GITHUB_OUTPUT"
+
+    - name: Read testbox config from metadata
+      if: steps.metadata.outputs.available == 'true'
       shell: bash
       run: |
+        METADATA_ADDR="${{ steps.metadata.outputs.metadata_addr }}"
+
+        TESTBOX_ID=$(curl -s "http://${METADATA_ADDR}/testboxId")
+        IDLE_TIMEOUT=$(curl -s "http://${METADATA_ADDR}/testboxIdleTimeout")
+        SSH_PUBLIC_KEY=$(curl -s "http://${METADATA_ADDR}/testboxSshPublicKey")
+        API_URL=$(curl -s "http://${METADATA_ADDR}/backendURL")
+        VM_ID=$(curl -s "http://${METADATA_ADDR}/vmID")
+
         if [ -n "$BLACKSMITH_HOSTNAME" ]; then
           RUNNER_HOST="$BLACKSMITH_HOSTNAME"
         else
@@ -50,20 +49,57 @@ runs:
         fi
         RUNNER_SSH_PORT="${BLACKSMITH_SSH_PORT:-22}"
 
+        mkdir -p /tmp/.testbox
+        {
+          echo "TESTBOX_ID='${TESTBOX_ID}'"
+          echo "IDLE_TIMEOUT='${IDLE_TIMEOUT}'"
+          echo "SSH_PUBLIC_KEY='${SSH_PUBLIC_KEY}'"
+          echo "API_URL='${API_URL}'"
+          echo "VM_ID='${VM_ID}'"
+          echo "RUNNER_HOST='${RUNNER_HOST}'"
+          echo "RUNNER_SSH_PORT='${RUNNER_SSH_PORT}'"
+          echo "WORKING_DIRECTORY='${GITHUB_WORKSPACE}'"
+          echo "ADOPTED_RUN_ID='${GITHUB_RUN_ID}'"
+        } > /tmp/.testbox/state.env
+        chmod 600 /tmp/.testbox/state.env
+
+        echo "Testbox config loaded from metadata service: testbox_id=${TESTBOX_ID}"
+
+    - name: Install SSH public key
+      if: steps.metadata.outputs.available == 'true'
+      shell: bash
+      run: |
+        source /tmp/.testbox/state.env
+        if [ -n "$SSH_PUBLIC_KEY" ]; then
+          mkdir -p ~/.ssh
+          echo "$SSH_PUBLIC_KEY" >> ~/.ssh/authorized_keys
+          chmod 700 ~/.ssh
+          chmod 600 ~/.ssh/authorized_keys
+          echo "SSH public key installed"
+        fi
+
+    - name: Install rsync
+      if: steps.metadata.outputs.available == 'true'
+      shell: bash
+      run: |
+        which rsync || sudo apt-get install -y rsync
+
+    - name: Phone home (hydrating)
+      if: steps.metadata.outputs.available == 'true'
+      shell: bash
+      run: |
+        source /tmp/.testbox/state.env
+
         curl -s -f -X POST "${API_URL}/api/testbox/phone-home" \
           -H "Content-Type: application/json" \
-          -H "Authorization: Bearer ${TESTBOX_TOKEN}" \
           -d "{
             \"testbox_id\": \"${TESTBOX_ID}\",
             \"status\": \"hydrating\",
+            \"vm_id\": \"${VM_ID}\",
             \"ip_address\": \"${RUNNER_HOST}\",
             \"ssh_port\": \"${RUNNER_SSH_PORT}\",
-            \"working_directory\": \"${GITHUB_WORKSPACE}\",
-            \"adopted_run_id\": \"${GITHUB_RUN_ID}\",
+            \"working_directory\": \"${WORKING_DIRECTORY}\",
+            \"adopted_run_id\": \"${ADOPTED_RUN_ID}\",
             \"metadata\": {}
           }" || echo "Warning: phone-home (hydrating) failed, continuing in degraded mode"
         echo "Phone-home (hydrating) complete."
-      env:
-        API_URL: ${{ inputs.api_url }}
-        TESTBOX_ID: ${{ inputs.testbox_id }}
-        TESTBOX_TOKEN: ${{ inputs.testbox_token }}
