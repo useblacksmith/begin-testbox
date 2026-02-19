@@ -5,6 +5,9 @@ inputs:
   testbox_id:
     description: 'Testbox session ID (from workflow_dispatch input)'
     required: true
+  api_url:
+    description: 'Override the backend API URL (default: discovered from VM metadata)'
+    required: false
 
 runs:
   using: 'composite'
@@ -31,6 +34,7 @@ runs:
       shell: bash
       env:
         TESTBOX_ID: ${{ inputs.testbox_id }}
+        API_URL_OVERRIDE: ${{ inputs.api_url }}
       run: |
         METADATA_ADDR="${{ steps.metadata.outputs.metadata_addr }}"
         STATE=/tmp/.testbox
@@ -38,7 +42,11 @@ runs:
         chmod 700 "$STATE"
 
         INSTALLATION_MODEL_ID=$(curl -s --connect-timeout 2 --max-time 5 "http://${METADATA_ADDR}/installationModelID")
-        API_URL=$(curl -s --connect-timeout 2 --max-time 5 "http://${METADATA_ADDR}/backendURL")
+        if [ -n "$API_URL_OVERRIDE" ]; then
+          API_URL="$API_URL_OVERRIDE"
+        else
+          API_URL=$(curl -s --connect-timeout 2 --max-time 5 "http://${METADATA_ADDR}/backendURL")
+        fi
 
         # Piggyback on the VM's stickyDiskToken for phone-home authentication.
         # This is a Sanctum token that proves the caller is a real Blacksmith VM
