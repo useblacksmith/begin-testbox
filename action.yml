@@ -121,28 +121,33 @@ runs:
           exit 0
         fi
 
-        TESTBOX_ID=$(cat "$STATE/testbox_id")
-        INSTALLATION_MODEL_ID=$(cat "$STATE/installation_model_id")
-        AUTH_TOKEN=$(cat "$STATE/auth_token")
-        API_URL=$(cat "$STATE/api_url")
-
         # Launch a background heartbeat loop that POSTs to the backend
         # every 30 seconds. The backend uses this to detect dead VMs
         # whose phone-home (completed) never arrived.
-        (
-          while true; do
-            sleep 30
-            curl -s -f --max-time 10 -X POST "${API_URL}/api/testbox/heartbeat" \
-              -H "Content-Type: application/json" \
-              -H "Authorization: Bearer ${AUTH_TOKEN}" \
-              -d "{
-                \"testbox_id\": \"${TESTBOX_ID}\",
-                \"installation_model_id\": ${INSTALLATION_MODEL_ID}
-              }" >/dev/null 2>&1 || true
-          done
-        ) &
+        #
+        # nohup + fd redirects + disown fully detaches the process
+        # from this step's shell. Without this, GitHub Actions may
+        # wait on or SIGTERM child processes between composite action
+        # steps, killing the heartbeat before run-testbox starts.
+        #
+        # The state files are read inside the loop so the script is
+        # self-contained and does not depend on shell variable scope.
+        nohup bash -c 'STATE=/tmp/.testbox
+        API_URL=$(cat "$STATE/api_url")
+        AUTH_TOKEN=$(cat "$STATE/auth_token")
+        TESTBOX_ID=$(cat "$STATE/testbox_id")
+        INSTALLATION_MODEL_ID=$(cat "$STATE/installation_model_id")
+        while true; do
+          sleep 30
+          curl -s -f --max-time 10 -X POST "${API_URL}/api/testbox/heartbeat" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${AUTH_TOKEN}" \
+            -d "{\"testbox_id\":\"${TESTBOX_ID}\",\"installation_model_id\":${INSTALLATION_MODEL_ID}}" \
+            >/dev/null 2>&1 || true
+        done' </dev/null >/dev/null 2>&1 &
+        disown
         echo $! > "$STATE/heartbeat_pid"
-        echo "Heartbeat started (PID $!, every 30s)"
+        echo "Heartbeat started (PID $!, every 30s, disowned)"
 
     - name: Install SSH public key
       if: steps.metadata.outputs.available == 'true' && inputs.testbox_id
