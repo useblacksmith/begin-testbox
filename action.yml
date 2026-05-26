@@ -145,9 +145,10 @@ runs:
             -d "{\"testbox_id\":\"${TESTBOX_ID}\",\"installation_model_id\":${INSTALLATION_MODEL_ID}}" \
             >/dev/null 2>&1 || true
         done' </dev/null >/dev/null 2>&1 &
-        disown
-        echo $! > "$STATE/heartbeat_pid"
-        echo "Heartbeat started (PID $!, every 30s, disowned)"
+        HEARTBEAT_PID=$!
+        echo "$HEARTBEAT_PID" > "$STATE/heartbeat_pid"
+        disown "$HEARTBEAT_PID"
+        echo "Heartbeat started (PID $HEARTBEAT_PID, every 30s, disowned)"
 
     - name: Install SSH public key
       if: steps.metadata.outputs.available == 'true' && inputs.testbox_id
