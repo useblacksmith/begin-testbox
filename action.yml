@@ -33,7 +33,7 @@ runs:
         if [ -z "$METADATA_PORT" ]; then
           METADATA_PORT=$(tr ' ' '\n' < /proc/cmdline | grep '^metadata_port=' | cut -d'=' -f2 || true)
           if [ -z "$METADATA_PORT" ]; then
-            echo "metadata_port not found in kernel cmdline"
+            echo "::warning::metadata_port not found in kernel cmdline; testbox is only supported on Blacksmith runners. Skipping testbox setup."
             echo "available=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
