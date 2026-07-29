@@ -17,3 +17,14 @@ jobs:
 
       - name: Lint action.yml
         run: yamllint -d relaxed action.yml
+
+  smoke:
+    runs-on: blacksmith
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assert BLACKSMITH_AGENT_ADDR is advertised
+        run: test -n "$BLACKSMITH_AGENT_ADDR"
+
+      - name: Run begin-testbox in validation mode
+        uses: ./

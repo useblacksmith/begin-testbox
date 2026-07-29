@@ -34,8 +34,13 @@ runs:
           fi
           export METADATA_PORT
         fi
+        if [ -z "$BLACKSMITH_AGENT_ADDR" ]; then
+          echo "::warning::BLACKSMITH_AGENT_ADDR is not set; testbox is only supported on Blacksmith runners. Skipping testbox setup."
+          echo "available=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
         echo "available=true" >> "$GITHUB_OUTPUT"
-        echo "metadata_addr=192.168.127.1:${METADATA_PORT}" >> "$GITHUB_OUTPUT"
+        echo "metadata_addr=${BLACKSMITH_AGENT_ADDR}:${METADATA_PORT}" >> "$GITHUB_OUTPUT"
 
     - name: Phone home and configure testbox
       if: steps.metadata.outputs.available == 'true' && inputs.testbox_id
