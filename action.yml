@@ -24,18 +24,23 @@ runs:
       id: metadata
       shell: bash
       run: |
+        if [ -z "${BLACKSMITH_AGENT_ADDR:-}" ]; then
+          echo "::warning::BLACKSMITH_AGENT_ADDR is not set; testbox is only supported on Blacksmith runners. Skipping testbox setup."
+          echo "available=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
         METADATA_PORT="${METADATA_PORT:-}"
         if [ -z "$METADATA_PORT" ]; then
-          METADATA_PORT=$(cat /proc/cmdline | tr ' ' '\n' | grep '^metadata_port=' | cut -d'=' -f2)
+          METADATA_PORT=$(tr ' ' '\n' < /proc/cmdline | grep '^metadata_port=' | cut -d'=' -f2 || true)
           if [ -z "$METADATA_PORT" ]; then
-            echo "metadata_port not found in kernel cmdline"
+            echo "::warning::metadata_port not found in kernel cmdline; testbox is only supported on Blacksmith runners. Skipping testbox setup."
             echo "available=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           export METADATA_PORT
         fi
         echo "available=true" >> "$GITHUB_OUTPUT"
-        echo "metadata_addr=192.168.127.1:${METADATA_PORT}" >> "$GITHUB_OUTPUT"
+        echo "metadata_addr=${BLACKSMITH_AGENT_ADDR}:${METADATA_PORT}" >> "$GITHUB_OUTPUT"
 
     - name: Phone home and configure testbox
       if: steps.metadata.outputs.available == 'true' && inputs.testbox_id
