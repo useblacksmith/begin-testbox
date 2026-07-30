@@ -79,7 +79,10 @@ runs:
         fi
         RUNNER_SSH_PORT="${BLACKSMITH_SSH_PORT:-22}"
 
-        RESPONSE=$(curl -s -f -X POST "${API_URL}/api/testbox/phone-home" \
+        # Capture the HTTP status separately from the body so we can tell a
+        # definitive backend rejection (4xx) apart from a transient failure
+        # (5xx / network error). Transport errors leave HTTP_STATUS as 000.
+        HTTP_STATUS=$(curl -s -o "$STATE/phone_home_response" -w "%{http_code}" -X POST "${API_URL}/api/testbox/phone-home" \
           -H "Content-Type: application/json" \
           -H "Authorization: Bearer ${AUTH_TOKEN}" \
           -d "{
@@ -91,10 +94,29 @@ runs:
             \"working_directory\": \"${GITHUB_WORKSPACE}\",
             \"adopted_run_id\": \"${GITHUB_RUN_ID}\",
             \"metadata\": {}
-          }" 2>/dev/null) || {
-          echo "Warning: phone-home (hydrating) failed, continuing in degraded mode"
-          RESPONSE=""
-        }
+          }" 2>/dev/null) || HTTP_STATUS="000"
+        RESPONSE=$(cat "$STATE/phone_home_response" 2>/dev/null || true)
+        rm -f "$STATE/phone_home_response"
+
+        case "$HTTP_STATUS" in
+          2*)
+            ;;
+          4*)
+            # The backend understood the handshake and refused it: it has no
+            # record of this testbox (typically a staging/production backend
+            # mismatch), the token is invalid, or the testbox was already shut
+            # down. Keeping the runner alive would just hang until the idle
+            # timeout, so self-terminate instead.
+            echo "::error::Testbox phone-home rejected by ${API_URL} (HTTP ${HTTP_STATUS}): ${RESPONSE}"
+            echo "::error::This backend has no usable record of testbox ${TESTBOX_ID}. This usually means the testbox was dispatched against a different backend environment (staging vs production) than the one serving this runner. Self-terminating."
+            rm -rf "$STATE"
+            exit 1
+            ;;
+          *)
+            echo "Warning: phone-home (hydrating) failed (HTTP ${HTTP_STATUS}), continuing in degraded mode"
+            RESPONSE=""
+            ;;
+        esac
 
         echo "$TESTBOX_ID" > "$STATE/testbox_id"
         echo "$INSTALLATION_MODEL_ID" > "$STATE/installation_model_id"
