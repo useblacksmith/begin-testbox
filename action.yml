@@ -62,14 +62,15 @@ runs:
         fi
 
         # Piggyback on the VM's stickyDiskToken for phone-home authentication.
-        # This is a Sanctum token that proves the caller is a real Blacksmith VM
-        # belonging to the claimed installation — it's only accessible from inside
-        # the VM via the metadata service and is not publicly visible.
+        # It proves the caller is a real Blacksmith VM belonging to the claimed
+        # installation, and the backend binds it to the runner that adopted this
+        # testbox's run. It's only accessible from inside the VM via the metadata
+        # service and is not publicly visible.
         AUTH_TOKEN=$(curl -s --connect-timeout 2 --max-time 5 "http://${METADATA_ADDR}/stickyDiskToken")
 
         if [ -z "$API_URL" ] || [ -z "$INSTALLATION_MODEL_ID" ] || [ -z "$AUTH_TOKEN" ]; then
-          echo "Warning: could not read required metadata (backendURL, installationModelID, stickyDiskToken)"
-          exit 0
+          echo "::error::Could not read required metadata (backendURL, installationModelID, stickyDiskToken); the testbox cannot phone home."
+          exit 1
         fi
 
         if [ -n "$BLACKSMITH_HOSTNAME" ]; then
@@ -79,22 +80,55 @@ runs:
         fi
         RUNNER_SSH_PORT="${BLACKSMITH_SSH_PORT:-22}"
 
-        RESPONSE=$(curl -s -f -X POST "${API_URL}/api/testbox/phone-home" \
-          -H "Content-Type: application/json" \
-          -H "Authorization: Bearer ${AUTH_TOKEN}" \
-          -d "{
-            \"testbox_id\": \"${TESTBOX_ID}\",
-            \"installation_model_id\": ${INSTALLATION_MODEL_ID},
-            \"status\": \"hydrating\",
-            \"ip_address\": \"${RUNNER_HOST}\",
-            \"ssh_port\": \"${RUNNER_SSH_PORT}\",
-            \"working_directory\": \"${GITHUB_WORKSPACE}\",
-            \"adopted_run_id\": \"${GITHUB_RUN_ID}\",
-            \"metadata\": {}
-          }" 2>/dev/null) || {
-          echo "Warning: phone-home (hydrating) failed, continuing in degraded mode"
-          RESPONSE=""
-        }
+        # The first phone-home can race warmup's write of the dispatched run ID
+        # and the adoption webhook. The backend answers 503 + Retry-After while
+        # that binding is pending, so retry transient failures up to a deadline
+        # and fail the job if the handshake never lands: without it the CLI's
+        # SSH key is never installed and the testbox is unusable.
+        PHONE_HOME_DEADLINE=$(( $(date +%s) + 90 ))
+        PHONE_HOME_RETRY_DELAY=2
+        PHONE_HOME_RESPONSE_FILE="$STATE/phone_home_response"
+        ATTEMPT=0
+        while true; do
+          ATTEMPT=$((ATTEMPT + 1))
+          HTTP_CODE=$(curl -s -o "$PHONE_HOME_RESPONSE_FILE" -w '%{http_code}' --max-time 30 \
+            -X POST "${API_URL}/api/testbox/phone-home" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${AUTH_TOKEN}" \
+            -d "{
+              \"testbox_id\": \"${TESTBOX_ID}\",
+              \"installation_model_id\": ${INSTALLATION_MODEL_ID},
+              \"status\": \"hydrating\",
+              \"ip_address\": \"${RUNNER_HOST}\",
+              \"ssh_port\": \"${RUNNER_SSH_PORT}\",
+              \"working_directory\": \"${GITHUB_WORKSPACE}\",
+              \"adopted_run_id\": \"${GITHUB_RUN_ID}\",
+              \"metadata\": {}
+            }") || HTTP_CODE=000
+
+          case "$HTTP_CODE" in
+            2??)
+              break
+              ;;
+            000|408|425|429|5??)
+              ;;
+            *)
+              echo "::error::Testbox phone-home rejected (HTTP ${HTTP_CODE}): $(cat "$PHONE_HOME_RESPONSE_FILE" 2>/dev/null)"
+              exit 1
+              ;;
+          esac
+
+          if [ "$(date +%s)" -ge "$PHONE_HOME_DEADLINE" ]; then
+            echo "::error::Testbox phone-home did not succeed before the deadline (last HTTP ${HTTP_CODE}, ${ATTEMPT} attempts): $(cat "$PHONE_HOME_RESPONSE_FILE" 2>/dev/null)"
+            exit 1
+          fi
+
+          echo "Phone-home not accepted yet (HTTP ${HTTP_CODE}, attempt ${ATTEMPT}); retrying in ${PHONE_HOME_RETRY_DELAY}s"
+          sleep "$PHONE_HOME_RETRY_DELAY"
+        done
+
+        RESPONSE=$(cat "$PHONE_HOME_RESPONSE_FILE")
+        rm -f "$PHONE_HOME_RESPONSE_FILE"
 
         echo "$TESTBOX_ID" > "$STATE/testbox_id"
         echo "$INSTALLATION_MODEL_ID" > "$STATE/installation_model_id"
@@ -105,16 +139,11 @@ runs:
         echo "$GITHUB_WORKSPACE" > "$STATE/working_directory"
         echo "$GITHUB_RUN_ID" > "$STATE/adopted_run_id"
 
-        if [ -n "$RESPONSE" ]; then
-          echo "$RESPONSE" | jq -r '.ssh_public_key // empty' > "$STATE/ssh_public_key"
-          IDLE_TIMEOUT=$(echo "$RESPONSE" | jq -r '.idle_timeout // empty')
-          echo "${IDLE_TIMEOUT:-10}" > "$STATE/idle_timeout"
-        else
-          echo "" > "$STATE/ssh_public_key"
-          echo "10" > "$STATE/idle_timeout"
-        fi
+        echo "$RESPONSE" | jq -r '.ssh_public_key // empty' > "$STATE/ssh_public_key"
+        IDLE_TIMEOUT=$(echo "$RESPONSE" | jq -r '.idle_timeout // empty')
+        echo "${IDLE_TIMEOUT:-10}" > "$STATE/idle_timeout"
 
-        echo "Testbox initialized: testbox_id=${TESTBOX_ID}"
+        echo "Testbox initialized: testbox_id=${TESTBOX_ID} (phone-home accepted after ${ATTEMPT} attempt(s))"
 
     - name: Start heartbeat
       if: steps.metadata.outputs.available == 'true' && inputs.testbox_id
