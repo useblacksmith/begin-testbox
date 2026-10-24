@@ -72,6 +72,13 @@ runs:
           echo "::error::Could not read required metadata (backendURL, installationModelID, stickyDiskToken); the testbox cannot phone home."
           exit 1
         fi
+        # The agent publishes the literal "unset" when the backend did not mint a
+        # token for this VM. Fail here with a clear message instead of letting the
+        # backend reject it as an invalid token.
+        if [ "$AUTH_TOKEN" = "unset" ]; then
+          echo "::error::This VM was not issued an identity token (stickyDiskToken=unset), so the testbox cannot phone home. This runner image/region does not support Testbox yet; contact Blacksmith support."
+          exit 1
+        fi
 
         if [ -n "$BLACKSMITH_HOSTNAME" ]; then
           RUNNER_HOST="$BLACKSMITH_HOSTNAME"
@@ -202,4 +209,14 @@ runs:
       if: steps.metadata.outputs.available == 'true' && inputs.testbox_id
       shell: bash
       run: |
-        which rsync || sudo apt-get install -y rsync
+        if command -v rsync >/dev/null 2>&1; then
+          exit 0
+        fi
+        if command -v apt-get >/dev/null 2>&1; then
+          sudo apt-get install -y rsync
+        elif command -v brew >/dev/null 2>&1; then
+          brew install rsync
+        else
+          echo "::error::rsync is not installed and no supported package manager was found."
+          exit 1
+        fi
