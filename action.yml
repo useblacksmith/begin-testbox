@@ -67,6 +67,10 @@ runs:
         # testbox's run. It's only accessible from inside the VM via the metadata
         # service and is not publicly visible.
         AUTH_TOKEN=$(curl -sf --connect-timeout 2 --max-time 5 "http://${METADATA_ADDR}/stickyDiskToken" || true)
+        # The host agent serves the literal "unset" when the backend minted no token.
+        if [ "$AUTH_TOKEN" = "unset" ]; then
+          AUTH_TOKEN=""
+        fi
 
         if [ -z "$API_URL" ] || [ -z "$INSTALLATION_MODEL_ID" ] || [ -z "$AUTH_TOKEN" ]; then
           echo "::error::Could not read required metadata (backendURL, installationModelID, stickyDiskToken); the testbox cannot phone home."
