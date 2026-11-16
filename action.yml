@@ -54,13 +54,10 @@ runs:
         mkdir -p "$STATE"
         chmod 700 "$STATE"
 
-        # The host hands each VM its own token on the kernel cmdline and the
-        # metadata service only answers requests that present it in
-        # X-Blacksmith-VM-Token. Read it the same way as metadata_port.
+        # The runner exports the host-minted per-VM token as BLACKSMITH_VM_TOKEN
+        # and the metadata service only answers requests that present it in
+        # X-Blacksmith-VM-Token.
         VM_TOKEN="${BLACKSMITH_VM_TOKEN:-}"
-        if [ -z "$VM_TOKEN" ]; then
-          VM_TOKEN=$(tr ' ' '\n' < /proc/cmdline | grep '^vm_token=' | cut -d'=' -f2- || true)
-        fi
         if [ -n "$VM_TOKEN" ]; then
           echo "::add-mask::${VM_TOKEN}"
         fi
