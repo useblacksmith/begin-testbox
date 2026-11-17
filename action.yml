@@ -54,11 +54,24 @@ runs:
         mkdir -p "$STATE"
         chmod 700 "$STATE"
 
-        INSTALLATION_MODEL_ID=$(curl -sf --connect-timeout 2 --max-time 5 "http://${METADATA_ADDR}/installationModelID" || true)
+        # The runner exports the host-minted per-VM token as BLACKSMITH_VM_TOKEN
+        # and the metadata service only answers requests that present it in
+        # X-Blacksmith-VM-Token.
+        VM_TOKEN="${BLACKSMITH_VM_TOKEN:-}"
+        if [ -n "$VM_TOKEN" ]; then
+          echo "::add-mask::${VM_TOKEN}"
+        fi
+        metadata_get() {
+          curl -sf --connect-timeout 2 --max-time 5 \
+            -H "X-Blacksmith-VM-Token: ${VM_TOKEN}" \
+            "http://${METADATA_ADDR}/$1" || true
+        }
+
+        INSTALLATION_MODEL_ID=$(metadata_get installationModelID)
         if [ -n "$API_URL_OVERRIDE" ]; then
           API_URL="$API_URL_OVERRIDE"
         else
-          API_URL=$(curl -sf --connect-timeout 2 --max-time 5 "http://${METADATA_ADDR}/backendURL" || true)
+          API_URL=$(metadata_get backendURL)
         fi
 
         # Piggyback on the VM's stickyDiskToken for phone-home authentication.
@@ -66,7 +79,7 @@ runs:
         # installation, and the backend binds it to the runner that adopted this
         # testbox's run. It's only accessible from inside the VM via the metadata
         # service and is not publicly visible.
-        AUTH_TOKEN=$(curl -sf --connect-timeout 2 --max-time 5 "http://${METADATA_ADDR}/stickyDiskToken" || true)
+        AUTH_TOKEN=$(metadata_get stickyDiskToken)
         # The host agent serves the literal "unset" when the backend minted no token.
         if [ "$AUTH_TOKEN" = "unset" ]; then
           AUTH_TOKEN=""
